@@ -13,8 +13,9 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Separator } from "@/components/ui/separator";
-import { FileText, Search, Plus, Eye, Edit, Trash2, Calendar, User, MapPin, DollarSign, CheckCircle, Clock, AlertCircle, Package, Calculator, TrendingUp } from "lucide-react";
+import { FileText, Search, Plus, Eye, Edit, Trash2, Calendar, User, MapPin, DollarSign, CheckCircle, Clock, AlertCircle, Package, Calculator, TrendingUp, RefreshCw } from "lucide-react";
 import { supabase } from "@/lib/supabase";
+import { supabaseLeads, hasLeadsSource, mapLeadToSolicitacao } from "@/lib/supabase-leads";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/contexts/AuthContextSimple";
 import { format, isThisMonth } from "date-fns";
@@ -67,6 +68,7 @@ const AdminOrcamentos = () => {
   const [isFullEditOpen, setIsFullEditOpen] = useState(false);
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
   const [orcamentoToDelete, setOrcamentoToDelete] = useState<string | null>(null);
+  const [isSyncingLeads, setIsSyncingLeads] = useState(false);
   const [editForm, setEditForm] = useState({
     nome_contratante: '',
     telefone: '',
@@ -116,19 +118,39 @@ const AdminOrcamentos = () => {
   });
 
   const fetchSolicitacoes = useCallback(async () => {
+    setIsSyncingLeads(true);
     try {
-      
-      const { data, error } = await supabase
-        .from('solicitacoes_orcamento')
-        .select('*')
-        .order('created_at', { ascending: false });
+      if (hasLeadsSource && supabaseLeads) {
+        const { data, error } = await supabaseLeads
+          .from('lead_submissions')
+          .select('*')
+          .order('created_at', { ascending: false });
 
-      if (error) {
-        console.error('Erro ao buscar solicitações:', error);
-        throw error;
+        if (error) {
+          console.warn('[Orçamentos] lead_submissions indisponível:', error.message);
+          setSolicitacoes([]);
+        } else {
+          setSolicitacoes((data || []).map(mapLeadToSolicitacao));
+        }
+      } else {
+        const { data, error } = await supabase
+          .from('solicitacoes_orcamento')
+          .select('*')
+          .order('created_at', { ascending: false });
+
+        if (error) {
+          // 42P01 = undefined_table. Tratar como ausência do recurso no ambiente atual.
+          if ((error as any).code === '42P01') {
+            console.warn('[Orçamentos] solicitacoes_orcamento indisponível:', error.message);
+            setSolicitacoes([]);
+          } else {
+            console.error('Erro ao buscar solicitações:', error);
+            throw error;
+          }
+        } else {
+          setSolicitacoes(data || []);
+        }
       }
-
-      setSolicitacoes(data || []);
     } catch (error) {
       console.error('❌ Erro ao carregar solicitações:', error);
       toast({
@@ -136,8 +158,10 @@ const AdminOrcamentos = () => {
         description: "Não foi possível carregar as solicitações de orçamento.",
         variant: "destructive",
       });
+    } finally {
+      setIsSyncingLeads(false);
     }
-  }, [toast]);
+  }, [toast, hasLeadsSource, supabaseLeads]);
 
   const fetchOrcamentos = useCallback(async () => {
     try {
@@ -296,18 +320,13 @@ const AdminOrcamentos = () => {
   }
 
   const filteredSolicitacoes = solicitacoes.filter(solicitacao => {
-    // Mostrar apenas solicitações de "Artigos Pirotécnicos" na aba Solicitações
-    const isArtigosPirotecnicos = solicitacao.tipo_solicitacao === 'artigos_pirotecnicos';
-    
-    if (!isArtigosPirotecnicos) return false;
-    
     const matchesSearch = 
       solicitacao.nome_completo.toLowerCase().includes(searchTerm.toLowerCase()) ||
       solicitacao.whatsapp.includes(searchTerm) ||
       (solicitacao.email && solicitacao.email.toLowerCase().includes(searchTerm.toLowerCase()));
-    
+
     const matchesTipo = filterTipo === "all" || solicitacao.tipo_solicitacao === filterTipo;
-    
+
     return matchesSearch && matchesTipo;
   });
 
@@ -349,13 +368,14 @@ const AdminOrcamentos = () => {
     return tipo === "artigos_pirotecnicos" ? "Artigos Pirotécnicos" : "Contratar Equipe";
   };
 
+  // Evita deslocamento de fuso: formata usando apenas a parte da data (YYYY-MM-DD)
   const formatDate = (date: string) => {
-    return format(new Date(date), "dd/MM/yyyy 'às' HH:mm", { locale: ptBR });
+    if (!date) return '';
+    const [y, m, d] = date.split('T')[0].split('-');
+    return `${d}/${m}/${y}`;
   };
 
-  const formatDateOnly = (date: string) => {
-    return format(new Date(date), "dd/MM/yyyy", { locale: ptBR });
-  };
+  const formatDateOnly = formatDate;
 
   const calculateOrcamentoTotal = () => {
     const subtotal = selectedProducts.reduce((sum, item) => 
@@ -460,13 +480,22 @@ const AdminOrcamentos = () => {
   };
 
   const handleMarkSolicitacaoProcessed = async (id: string) => {
+    // Quando a fonte é externa, evitamos mutar o outro projeto.
+    if (hasLeadsSource) {
+      toast({
+        title: "Fonte externa",
+        description: "Processamento visual apenas — não alteramos lead_submissions.",
+      });
+      return;
+    }
+
     try {
       const { error } = await supabase
         .from('solicitacoes_orcamento')
         .update({ enviado_email: true })
         .eq('id', id);
 
-      if (error) throw error;
+      if (error && (error as any).code !== '42P01') throw error;
 
       toast({
         title: "Solicitação marcada como processada",
@@ -502,7 +531,7 @@ const AdminOrcamentos = () => {
           .delete()
           .eq('id', solicitacaoId);
 
-        if (solicitacaoError) {
+        if (solicitacaoError && (solicitacaoError as any).code !== '42P01') {
           console.error('Erro ao excluir solicitação:', solicitacaoError);
           throw solicitacaoError;
         }
@@ -961,13 +990,22 @@ const AdminOrcamentos = () => {
   const handleUpdateSolicitacao = async () => {
     if (!selectedSolicitacao) return;
 
+    if (hasLeadsSource) {
+      toast({
+        title: "Edição indisponível",
+        description: "Leads vêm de outro projeto (lead_submissions). Edite lá ou converta em orçamento aqui.",
+        variant: "destructive",
+      });
+      return;
+    }
+
     try {
       const { error } = await supabase
         .from('solicitacoes_orcamento')
         .update(solicitacaoEditForm)
         .eq('id', selectedSolicitacao.id);
 
-      if (error) throw error;
+      if (error && (error as any).code !== '42P01') throw error;
 
       toast({
         title: "Solicitação atualizada",
@@ -987,6 +1025,15 @@ const AdminOrcamentos = () => {
 
   const handleDeleteSolicitacao = async (id: string) => {
     if (!confirm('Tem certeza que deseja excluir esta solicitação?')) return;
+
+    if (hasLeadsSource) {
+      toast({
+        title: "Exclusão bloqueada",
+        description: "Leads externos não são excluídos daqui.",
+        variant: "destructive",
+      });
+      return;
+    }
     
     try {
       const { error } = await supabase
@@ -994,7 +1041,7 @@ const AdminOrcamentos = () => {
         .delete()
         .eq('id', id);
 
-      if (error) throw error;
+      if (error && (error as any).code !== '42P01') throw error;
 
       toast({
         title: "Solicitação excluída!",
@@ -1646,7 +1693,7 @@ const AdminOrcamentos = () => {
           <TabsList className="grid w-full grid-cols-2 bg-primary/10 border border-primary/20">
             <TabsTrigger value="solicitacoes" className="text-xs sm:text-sm py-1.5 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
               <FileText className="h-3 w-3 sm:h-4 sm:w-4 mr-1 sm:mr-2" />
-              Solicitações ({solicitacoes.filter(s => s.tipo_solicitacao === 'artigos_pirotecnicos').length})
+              Solicitações ({solicitacoes.length})
             </TabsTrigger>
             <TabsTrigger value="orcamentos" className="text-xs sm:text-sm py-1.5 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
               <Calculator className="h-3 w-3 sm:h-4 sm:w-4 mr-1 sm:mr-2" />
@@ -1679,6 +1726,15 @@ const AdminOrcamentos = () => {
                       <SelectItem value="artigos_pirotecnicos" className="text-xs sm:text-sm">Artigos Pirotécnicos</SelectItem>
                     </SelectContent>
                   </Select>
+                  <Button
+                    variant="outline"
+                    className="h-8 sm:h-10 text-xs sm:text-sm"
+                    onClick={fetchSolicitacoes}
+                    disabled={isSyncingLeads}
+                  >
+                    <RefreshCw className={`h-3 w-3 sm:h-4 sm:w-4 mr-2 ${isSyncingLeads ? 'animate-spin' : ''}`} />
+                    {isSyncingLeads ? 'Sincronizando...' : 'Sincronizar agora'}
+                  </Button>
                 </div>
               </CardContent>
             </Card>

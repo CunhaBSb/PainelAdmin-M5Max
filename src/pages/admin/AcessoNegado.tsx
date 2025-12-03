@@ -45,11 +45,11 @@ const AcessoNegado = () => {
               </Button>
               
               <Button 
-                onClick={() => navigate('/')}
+                onClick={() => navigate('/admin/dashboard')}
                 variant="outline"
                 className="w-full"
               >
-                Ir para Homepage
+                Ir para Dashboard
               </Button>
             </div>
           </CardContent>

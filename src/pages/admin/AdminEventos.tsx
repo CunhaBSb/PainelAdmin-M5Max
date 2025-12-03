@@ -104,42 +104,49 @@ const AdminEventos = () => {
         setLoading(true);
         setError(null);
         
+        // Carrega todos os orçamentos como "eventos" (inclui realizados/passados)
         const { data, error: fetchError } = await supabase
-          .from('eventos')
+          .from('orcamentos')
           .select(`
-            *,
-            orcamentos (
-              id,
-              evento_nome,
-              evento_data,
-              evento_local,
-              nome_contratante,
-              telefone,
-              tipo,
-              valor_total,
-              orcamentos_produtos (
-                id,
-                quantidade,
-                valor_unitario,
-                valor_total,
-                produtos (
-                  id,
-                  codigo,
-                  nome_produto,
-                  categoria,
-                  valor_venda,
-                  valor_compra
-                )
-              )
-            )
+            id,
+            evento_nome,
+            evento_data,
+            evento_local,
+            nome_contratante,
+            telefone,
+            tipo,
+            status,
+            valor_total,
+            pdf_url,
+            created_at,
+            updated_at
           `)
-          .order('created_at', { ascending: false });
+          .order('evento_data', { ascending: false });
 
-        if (fetchError) {
-          throw fetchError;
-        }
+        if (fetchError) throw fetchError;
 
-        setEventos(data || []);
+        const mapped = (data || []).map((o) => ({
+          id: o.id,
+          status: o.status,
+          pdf_url: o.pdf_url,
+          observacoes: null,
+          confirmado_em: null,
+          realizado_em: null,
+          created_at: o.created_at,
+          updated_at: o.updated_at,
+          orcamentos: {
+            id: o.id,
+            evento_nome: o.evento_nome,
+            evento_data: o.evento_data,
+            evento_local: o.evento_local,
+            nome_contratante: o.nome_contratante,
+            telefone: o.telefone,
+            tipo: o.tipo,
+            valor_total: o.valor_total,
+          },
+        }));
+
+        setEventos(mapped);
       } catch (err) {
         console.error('Erro ao buscar orçamentos:', err);
         setError('Erro ao carregar eventos');
@@ -184,11 +191,18 @@ const AdminEventos = () => {
   const { filteredItems: filteredEventos } = useDebouncedNestedSearch(
     baseFilteredEventos,
     searchTerm,
-    (evento, term) => 
-      evento.orcamentos?.evento_nome.toLowerCase().includes(term) ||
-      evento.orcamentos?.nome_contratante.toLowerCase().includes(term) ||
-      evento.orcamentos?.evento_local.toLowerCase().includes(term) ||
-      false
+    (evento, term) => {
+      const nome = (evento.orcamentos?.evento_nome || '').toLowerCase();
+      const contratante = (evento.orcamentos?.nome_contratante || '').toLowerCase();
+      const local = (evento.orcamentos?.evento_local || '').toLowerCase();
+      const status = (evento.status || '').toLowerCase();
+      return (
+        nome.includes(term) ||
+        contratante.includes(term) ||
+        local.includes(term) ||
+        status.includes(term)
+      );
+    }
   );
 
   // Calcular estatísticas baseadas nos eventos
@@ -197,6 +211,7 @@ const AdminEventos = () => {
     pendentes: eventos.filter(e => e.status === 'pendente').length,
     confirmados: eventos.filter(e => e.status === 'confirmado').length,
     cancelados: eventos.filter(e => e.status === 'cancelado').length,
+    realizados: eventos.filter(e => e.status === 'realizado').length,
   };
 
   // Funções para ações
@@ -212,6 +227,7 @@ const AdminEventos = () => {
 
   const handleUpdateStatus = async (id: string, newStatus: string) => {
     try {
+      // Atualiza status direto na tabela de orçamentos (fonte dos eventos)
       const { error } = await supabase
         .from('orcamentos')
         .update({ status: newStatus })
@@ -224,13 +240,48 @@ const AdminEventos = () => {
         description: `Status do evento foi alterado para ${newStatus}`,
       });
 
-      // Recarregar dados
-      const { data } = await supabase
+      // Recarregar lista mapeada de orçamentos
+      const { data: orcData } = await supabase
         .from('orcamentos')
-        .select('*')
-        .order('created_at', { ascending: false });
-      
-      if (data) setOrcamentos(data);
+        .select(`
+          id,
+          evento_nome,
+          evento_data,
+          evento_local,
+          nome_contratante,
+          telefone,
+          tipo,
+          status,
+          valor_total,
+          pdf_url,
+          created_at,
+          updated_at
+        `)
+        .order('evento_data', { ascending: false });
+
+      if (orcData) {
+        const mapped = orcData.map((o) => ({
+          id: o.id,
+          status: o.status,
+          pdf_url: o.pdf_url,
+          observacoes: null,
+          confirmado_em: null,
+          realizado_em: null,
+          created_at: o.created_at,
+          updated_at: o.updated_at,
+          orcamentos: {
+            id: o.id,
+            evento_nome: o.evento_nome,
+            evento_data: o.evento_data,
+            evento_local: o.evento_local,
+            nome_contratante: o.nome_contratante,
+            telefone: o.telefone,
+            tipo: o.tipo,
+            valor_total: o.valor_total,
+          },
+        }));
+        setEventos(mapped);
+      }
     } catch (error) {
       toast({
         title: "Erro",
@@ -585,6 +636,7 @@ const AdminEventos = () => {
                     <SelectItem value="all">Todos os status</SelectItem>
                     <SelectItem value="pendente">Pendente</SelectItem>
                     <SelectItem value="confirmado">Confirmado</SelectItem>
+                    <SelectItem value="realizado">Realizado</SelectItem>
                     <SelectItem value="cancelado">Cancelado</SelectItem>
                   </SelectContent>
                 </Select>
@@ -617,20 +669,20 @@ const AdminEventos = () => {
               Lista dos eventos cadastrados no sistema
             </CardDescription>
           </CardHeader>
-          <CardContent>
+      <CardContent>
             {filteredEventos.length === 0 ? (
               <div className="text-center py-12">
                 <Calendar className="h-16 w-16 mx-auto mb-4 text-muted-foreground" />
                 <h3 className="text-lg font-medium mb-2">
-                  {orcamentos.length === 0 ? "Nenhum evento encontrado" : "Nenhum evento corresponde aos filtros"}
+                  {eventos.length === 0 ? "Nenhum evento encontrado" : "Nenhum evento corresponde aos filtros"}
                 </h3>
                 <p className="text-muted-foreground mb-4">
-                  {orcamentos.length === 0 
+                  {eventos.length === 0 
                     ? "Não há eventos cadastrados no sistema ainda." 
                     : "Tente ajustar os filtros para encontrar eventos."
                   }
                 </p>
-                {orcamentos.length === 0 && (
+                {eventos.length === 0 && (
                   <Button onClick={handleNewEvent}>
                     <Plus className="h-4 w-4 mr-2" />
                     Criar Primeiro Evento
@@ -641,8 +693,10 @@ const AdminEventos = () => {
               <>
                 {/* Desktop View */}
                 <div className="hidden lg:block space-y-4">
-                  {filteredEventos.map((evento) => (
-                  <Card key={orcamento.id} className="bg-card border border-border hover:shadow-md transition-shadow">
+                  {filteredEventos.map((evento) => {
+                    const orc = evento.orcamentos;
+                    return (
+                  <Card key={evento.id} className="bg-card border border-border hover:shadow-md transition-shadow">
                     <CardContent className="p-6">
                       <div className="flex items-center justify-between gap-6">
                         {/* Informações principais */}
@@ -651,22 +705,22 @@ const AdminEventos = () => {
                           <div className="flex flex-col">
                             <div className="mb-3">
                               <h3 className="text-lg font-semibold text-foreground truncate">
-                                {orcamento.evento_nome}
+                                {orc?.evento_nome || 'Evento sem nome'}
                               </h3>
                               <p className="text-sm text-muted-foreground">
-                                {orcamento.tipo === 'show_pirotecnico' ? 'Show Pirotécnico' : 'Venda de Artigos'}
+                                {orc?.tipo === 'show_pirotecnico' ? 'Show Pirotécnico' : 'Venda de Artigos'}
                               </p>
                             </div>
                             <Badge 
                               variant={
-                                orcamento.status === 'confirmado' ? 'default' : 
-                                orcamento.status === 'cancelado' ? 'destructive' : 'outline'
+                                evento.status === 'confirmado' ? 'default' : 
+                                evento.status === 'cancelado' ? 'destructive' : 'outline'
                               }
                               className="w-fit"
                             >
-                              {orcamento.status === 'pendente' && 'Pendente'}
-                              {orcamento.status === 'confirmado' && 'Confirmado'}
-                              {orcamento.status === 'cancelado' && 'Cancelado'}
+                              {evento.status === 'pendente' && 'Pendente'}
+                              {evento.status === 'confirmado' && 'Confirmado'}
+                              {evento.status === 'cancelado' && 'Cancelado'}
                             </Badge>
                           </div>
                           
@@ -674,12 +728,16 @@ const AdminEventos = () => {
                           <div>
                             <div className="mb-3">
                               <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Cliente</p>
-                              <p className="font-medium text-foreground truncate">{orcamento.nome_contratante}</p>
+                              <p className="font-medium text-foreground truncate">{orc?.nome_contratante || '—'}</p>
                             </div>
                             <div>
                               <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Data</p>
                               <p className="font-medium text-foreground">
-                                {new Date(orcamento.evento_data).toLocaleDateString('pt-BR')}
+                                {(() => {
+                                  if (!orc?.evento_data) return '—'
+                                  const d = new Date(orc.evento_data)
+                                  return isNaN(d.getTime()) ? '—' : d.toLocaleDateString('pt-BR')
+                                })()}
                               </p>
                             </div>
                           </div>
@@ -687,8 +745,8 @@ const AdminEventos = () => {
                           {/* Local */}
                           <div>
                             <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Local</p>
-                            <p className="font-medium text-foreground text-sm leading-tight" title={orcamento.evento_local}>
-                              {orcamento.evento_local}
+                            <p className="font-medium text-foreground text-sm leading-tight" title={orc?.evento_local}>
+                              {orc?.evento_local || '—'}
                             </p>
                           </div>
                           
@@ -696,14 +754,14 @@ const AdminEventos = () => {
                           <div>
                             <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Valor Total</p>
                             <p className="text-xl font-bold text-primary">
-                              R$ {Number(orcamento.valor_total).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                              R$ {Number(orc?.valor_total || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
                             </p>
-                            {orcamento.orcamentos_produtos && orcamento.orcamentos_produtos.length > 0 && (
+                            {orc?.orcamentos_produtos && orc.orcamentos_produtos.length > 0 && (
                               <div className="mt-2">
                                 <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Margem de Lucro</p>
                                 <p className="text-sm font-semibold text-green-600">
                                   {(() => {
-                                    const produtosUnicos = (orcamento.orcamentos_produtos || [])
+                                    const produtosUnicos = (orc.orcamentos_produtos || [])
                                       .filter((item, index, array) => {
                                         const key = `${item.produtos?.id}-${item.quantidade}-${item.valor_unitario}`;
                                         return array.findIndex(i => 
@@ -716,8 +774,8 @@ const AdminEventos = () => {
                                         return total + (produto.valor_compra * item.quantidade);
                                       }
                                       return total;
-                                    }, 0);
-                                    const valorVenda = Number(orcamento.valor_total);
+                                      }, 0);
+                                    const valorVenda = Number(orc?.valor_total || 0);
                                     const margem = valorVenda - valorCompra;
                                     const percentual = valorCompra > 0 ? ((margem / valorCompra) * 100) : 0;
                                     return `R$ ${margem.toLocaleString('pt-BR', { minimumFractionDigits: 2 })} (${percentual.toFixed(1)}%)`;
@@ -733,7 +791,7 @@ const AdminEventos = () => {
                           <Button 
                             variant="outline" 
                             size="sm"
-                            onClick={() => handleViewDetails(orcamento)}
+                            onClick={() => handleViewDetails(evento)}
                             className="min-w-[100px]"
                           >
                             <Eye className="h-4 w-4 mr-1" />
@@ -741,10 +799,10 @@ const AdminEventos = () => {
                           </Button>
                           
                           
-                          {orcamento.status === 'pendente' && (
+                          {evento.status === 'pendente' && (
                             <Button 
                               size="sm"
-                              onClick={() => handleUpdateStatus(orcamento.id, 'confirmado')}
+                              onClick={() => handleUpdateStatus(evento.id, 'confirmado')}
                               className="min-w-[100px]"
                             >
                               <CheckCircle className="h-4 w-4 mr-1" />
@@ -755,35 +813,37 @@ const AdminEventos = () => {
                       </div>
                     </CardContent>
                   </Card>
-                  ))}
+                  )})}
                 </div>
 
                 {/* Mobile View */}
                 <div className="lg:hidden space-y-3">
-                  {filteredEventos.map((evento) => (
-                    <Card key={orcamento.id} className="bg-card border border-border hover:shadow-md transition-shadow">
+                  {filteredEventos.map((evento) => {
+                    const orc = evento.orcamentos;
+                    return (
+                    <Card key={evento.id} className="bg-card border border-border hover:shadow-md transition-shadow">
                       <CardContent className="p-4">
                         <div className="space-y-3">
                           {/* Header com nome e status */}
                           <div className="flex items-start justify-between gap-3">
                             <div className="flex-1 min-w-0">
                               <h3 className="text-lg font-semibold text-foreground truncate">
-                                {orcamento.evento_nome}
+                                {orc?.evento_nome || 'Evento'}
                               </h3>
                               <p className="text-sm text-muted-foreground">
-                                {orcamento.tipo === 'show_pirotecnico' ? 'Show Pirotécnico' : 'Venda de Artigos'}
+                                {orc?.tipo === 'show_pirotecnico' ? 'Show Pirotécnico' : 'Venda de Artigos'}
                               </p>
                             </div>
                             <Badge 
                               variant={
-                                orcamento.status === 'confirmado' ? 'default' : 
-                                orcamento.status === 'cancelado' ? 'destructive' : 'outline'
+                                evento.status === 'confirmado' ? 'default' : 
+                                evento.status === 'cancelado' ? 'destructive' : 'outline'
                               }
                               className="shrink-0"
                             >
-                              {orcamento.status === 'pendente' && 'Pendente'}
-                              {orcamento.status === 'confirmado' && 'Confirmado'}
-                              {orcamento.status === 'cancelado' && 'Cancelado'}
+                              {evento.status === 'pendente' && 'Pendente'}
+                              {evento.status === 'confirmado' && 'Confirmado'}
+                              {evento.status === 'cancelado' && 'Cancelado'}
                             </Badge>
                           </div>
 
@@ -791,30 +851,34 @@ const AdminEventos = () => {
                           <div className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
                             <div>
                               <span className="text-muted-foreground block text-xs uppercase tracking-wide font-medium">Cliente:</span>
-                              <p className="font-medium text-foreground truncate">{orcamento.nome_contratante}</p>
+                              <p className="font-medium text-foreground truncate">{orc?.nome_contratante || '—'}</p>
                             </div>
                             <div>
                               <span className="text-muted-foreground block text-xs uppercase tracking-wide font-medium">Data:</span>
                               <p className="font-medium text-foreground">
-                                {new Date(orcamento.evento_data).toLocaleDateString('pt-BR')}
+                                {(() => {
+                                  if (!orc?.evento_data) return '—'
+                                  const d = new Date(orc.evento_data)
+                                  return isNaN(d.getTime()) ? '—' : d.toLocaleDateString('pt-BR')
+                                })()}
                               </p>
                             </div>
                             <div className="col-span-2">
                               <span className="text-muted-foreground block text-xs uppercase tracking-wide font-medium">Local:</span>
-                              <p className="font-medium text-foreground text-sm leading-tight">{orcamento.evento_local}</p>
+                              <p className="font-medium text-foreground text-sm leading-tight">{orc?.evento_local || '—'}</p>
                             </div>
                             <div>
                               <span className="text-muted-foreground block text-xs uppercase tracking-wide font-medium">Valor Total:</span>
                               <p className="text-lg font-bold text-primary">
-                                R$ {Number(orcamento.valor_total).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                                R$ {Number(orc?.valor_total || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
                               </p>
                             </div>
-                            {orcamento.orcamentos_produtos && orcamento.orcamentos_produtos.length > 0 && (
+                            {orc?.orcamentos_produtos && orc.orcamentos_produtos.length > 0 && (
                               <div>
                                 <span className="text-muted-foreground block text-xs uppercase tracking-wide font-medium">Margem:</span>
                                 <p className="text-sm font-semibold text-green-600">
                                   {(() => {
-                                    const produtosUnicos = (orcamento.orcamentos_produtos || [])
+                                    const produtosUnicos = (orc.orcamentos_produtos || [])
                                       .filter((item, index, array) => {
                                         const key = `${item.produtos?.id}-${item.quantidade}-${item.valor_unitario}`;
                                         return array.findIndex(i => 
@@ -828,7 +892,7 @@ const AdminEventos = () => {
                                       }
                                       return total;
                                     }, 0);
-                                    const valorVenda = Number(orcamento.valor_total);
+                                    const valorVenda = Number(orc?.valor_total || 0);
                                     const margem = valorVenda - valorCompra;
                                     const percentual = valorCompra > 0 ? ((margem / valorCompra) * 100) : 0;
                                     return `${percentual.toFixed(1)}%`;
@@ -843,7 +907,7 @@ const AdminEventos = () => {
                             <Button 
                               variant="outline" 
                               size="sm"
-                              onClick={() => handleViewDetails(orcamento)}
+                              onClick={() => handleViewDetails(evento)}
                               className="flex-1"
                             >
                               <Eye className="h-4 w-4 mr-1" />
@@ -851,10 +915,10 @@ const AdminEventos = () => {
                             </Button>
                             
                             
-                            {orcamento.status === 'pendente' && (
+                            {evento.status === 'pendente' && (
                               <Button 
                                 size="sm"
-                                onClick={() => handleUpdateStatus(orcamento.id, 'confirmado')}
+                                onClick={() => handleUpdateStatus(evento.id, 'confirmado')}
                                 className="flex-1"
                               >
                                 <CheckCircle className="h-4 w-4 mr-1" />
@@ -865,7 +929,7 @@ const AdminEventos = () => {
                         </div>
                       </CardContent>
                     </Card>
-                  ))}
+                  )})}
                 </div>
               </>
             )}
@@ -882,142 +946,86 @@ const AdminEventos = () => {
               </DialogDescription>
             </DialogHeader>
             
-            {selectedOrcamento && (
-              <div className="space-y-6">
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div>
-                    <Label className="text-sm font-medium">Nome do Evento</Label>
-                    <p className="text-sm mt-1">{selectedOrcamento.evento_nome}</p>
-                  </div>
-                  
-                  <div>
-                    <Label className="text-sm font-medium">Status</Label>
-                    <div className="mt-1">
-                      <Badge 
-                        variant={
-                          selectedOrcamento.status === 'confirmado' ? 'default' : 
-                          selectedOrcamento.status === 'cancelado' ? 'destructive' : 'outline'
-                        }
-                      >
-                        {selectedOrcamento.status === 'pendente' && 'Pendente'}
-                        {selectedOrcamento.status === 'confirmado' && 'Confirmado'}
-                        {selectedOrcamento.status === 'cancelado' && 'Cancelado'}
-                      </Badge>
-                    </div>
-                  </div>
-                  
-                  <div>
-                    <Label className="text-sm font-medium">Cliente</Label>
-                    <p className="text-sm mt-1">{selectedOrcamento.nome_contratante}</p>
-                  </div>
-                  
-                  <div>
-                    <Label className="text-sm font-medium">Telefone</Label>
-                    <p className="text-sm mt-1">{selectedOrcamento.telefone || 'Não informado'}</p>
-                  </div>
-                  
-                  <div>
-                    <Label className="text-sm font-medium">Data do Evento</Label>
-                    <p className="text-sm mt-1">
-                      {new Date(selectedOrcamento.evento_data).toLocaleDateString('pt-BR')}
-                    </p>
-                  </div>
-                  
-                  <div>
-                    <Label className="text-sm font-medium">Tipo</Label>
-                    <p className="text-sm mt-1">
-                      {selectedOrcamento.tipo === 'show_pirotecnico' ? 'Show Pirotécnico' : 'Venda de Artigos'}
-                    </p>
-                  </div>
+        {selectedEvento?.orcamentos && (
+          <div className="space-y-6">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <Label className="text-sm font-medium">Nome do Evento</Label>
+                <p className="text-sm mt-1">{selectedEvento.orcamentos.evento_nome}</p>
+              </div>
+              
+              <div>
+                <Label className="text-sm font-medium">Status</Label>
+                <div className="mt-1">
+                  <Badge 
+                    variant={
+                      selectedEvento.status === 'confirmado' ? 'default' : 
+                      selectedEvento.status === 'cancelado' ? 'destructive' : 'outline'
+                    }
+                  >
+                    {selectedEvento.status === 'pendente' && 'Pendente'}
+                    {selectedEvento.status === 'confirmado' && 'Confirmado'}
+                    {selectedEvento.status === 'cancelado' && 'Cancelado'}
+                  </Badge>
                 </div>
-                
-                <div>
-                  <Label className="text-sm font-medium">Local do Evento</Label>
-                  <p className="text-sm mt-1">{selectedOrcamento.evento_local}</p>
-                </div>
-                
-                <div>
-                  <Label className="text-sm font-medium">Valor Total</Label>
-                  <p className="text-lg font-bold text-green-600 mt-1">
-                    R$ {Number(selectedOrcamento.valor_total).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
-                  </p>
-                </div>
-                
-                <div className="flex justify-end gap-2 pt-4">
-                  {selectedOrcamento.status === 'pendente' && (
-                    <Button 
-                      onClick={() => {
-                        handleUpdateStatus(selectedOrcamento.id, 'confirmado');
-                        setIsDetailsOpen(false);
-                      }}
-                    >
-                      Confirmar Evento
-                    </Button>
+              </div>
+              
+              <div>
+                <Label className="text-sm font-medium">Cliente</Label>
+                <p className="text-sm mt-1">{selectedEvento.orcamentos.nome_contratante}</p>
+              </div>
+              
+              <div>
+                <Label className="text-sm font-medium">Telefone</Label>
+                <p className="text-sm mt-1">{selectedEvento.orcamentos.telefone || 'Não informado'}</p>
+              </div>
+              
+              <div>
+                <Label className="text-sm font-medium">Data do Evento</Label>
+                <p className="text-sm mt-1">
+                  {(() => {
+                    const d = new Date(selectedEvento.orcamentos.evento_data)
+                    return isNaN(d.getTime()) ? '—' : d.toLocaleDateString('pt-BR')
+                  })()}
+                </p>
+              </div>
+              
+              <div>
+                <Label className="text-sm font-medium">Tipo</Label>
+                <p className="text-sm mt-1">
+                  {selectedEvento.orcamentos.tipo === 'show_pirotecnico' ? 'Show Pirotécnico' : 'Venda de Artigos'}
+                </p>
+              </div>
+            </div>
+            
+            <div>
+              <Label className="text-sm font-medium">Local do Evento</Label>
+              <p className="text-sm mt-1">{selectedEvento.orcamentos.evento_local}</p>
+            </div>
+            
+            <div>
+              <Label className="text-sm font-medium">Valor Total</Label>
+              <p className="text-lg font-bold text-green-600 mt-1">
+                R$ {Number(selectedEvento.orcamentos.valor_total || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+              </p>
+            </div>
+            
+            <div className="flex justify-end gap-2 pt-4">
+              {selectedEvento.status === 'pendente' && (
+                <Button 
+                  onClick={() => {
+                    handleUpdateStatus(selectedEvento.id, 'confirmado');
+                    setIsDetailsOpen(false);
+                  }}
+                >
+                  Confirmar Evento
+                </Button>
                   )}
                   <Button 
                     variant="outline" 
                     onClick={() => setIsDetailsOpen(false)}
                   >
                     Fechar
-                  </Button>
-                </div>
-              </div>
-            )}
-          </DialogContent>
-        </Dialog>
-
-        {/* Modal de Edição */}
-        <Dialog open={isEditOpen} onOpenChange={setIsEditOpen}>
-          <DialogContent className="bg-background border-border">
-            <DialogHeader>
-              <DialogTitle className="text-foreground">Editar Status do Evento</DialogTitle>
-              <DialogDescription className="text-muted-foreground">
-                Altere o status do evento conforme necessário
-              </DialogDescription>
-            </DialogHeader>
-            
-            {selectedOrcamento && (
-              <div className="space-y-4">
-                <div>
-                  <Label>Evento: {selectedOrcamento.evento_nome}</Label>
-                </div>
-                
-                <div className="space-y-2">
-                  <Label>Novo Status</Label>
-                  <div className="flex gap-2">
-                    <Button
-                      variant={selectedOrcamento.status === 'pendente' ? 'default' : 'outline'}
-                      onClick={() => {
-                        handleUpdateStatus(selectedOrcamento.id, 'pendente');
-                        setIsEditOpen(false);
-                      }}
-                    >
-                      Pendente
-                    </Button>
-                    <Button
-                      variant={selectedOrcamento.status === 'confirmado' ? 'default' : 'outline'}
-                      onClick={() => {
-                        handleUpdateStatus(selectedOrcamento.id, 'confirmado');
-                        setIsEditOpen(false);
-                      }}
-                    >
-                      Confirmado
-                    </Button>
-                    <Button
-                      variant={selectedOrcamento.status === 'cancelado' ? 'destructive' : 'outline'}
-                      onClick={() => {
-                        handleUpdateStatus(selectedOrcamento.id, 'cancelado');
-                        setIsEditOpen(false);
-                      }}
-                    >
-                      Cancelado
-                    </Button>
-                  </div>
-                </div>
-                
-                <div className="flex justify-end gap-2 pt-4">
-                  <Button variant="outline" onClick={() => setIsEditOpen(false)}>
-                    Cancelar
                   </Button>
                 </div>
               </div>

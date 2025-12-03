@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Package, DollarSign, FileText, Calendar, TrendingUp, Activity, AlertTriangle, Eye, ShoppingCart, Zap, Clock } from "lucide-react";
 import { AdminLayout } from "@/components/admin/AdminLayout";
 import { supabase } from "@/lib/supabase";
+import { supabaseLeads, hasLeadsSource, mapLeadToSolicitacao } from "@/lib/supabase-leads";
 import { useToast } from "@/hooks/use-toast";
 import { useNavigate } from "react-router-dom";
 import { format, parseISO, isToday, addDays } from "date-fns";
@@ -89,15 +90,35 @@ const AdminDashboard = () => {
 
       if (eventosError) throw eventosError;
 
-      // Buscar solicitações pendentes
-      const { data: solicitacoes, error: solicitacoesError } = await supabase
-        .from('solicitacoes_orcamento')
-        .select('id, nome_completo, tipo_solicitacao, created_at')
-        .eq('enviado_email', false)
-        .order('created_at', { ascending: false })
-        .limit(10);
+      // Buscar solicitações pendentes (prioriza fonte externa lead_submissions)
+      let solicitacoes: Array<{ id: string; nome_completo: string; tipo_solicitacao: string; created_at: string }> = [];
 
-      if (solicitacoesError) throw solicitacoesError;
+      if (hasLeadsSource && supabaseLeads) {
+        const { data, error } = await supabaseLeads
+          .from('lead_submissions')
+          .select('*')
+          .order('created_at', { ascending: false })
+          .limit(10);
+
+        if (error) {
+          console.warn('[Dashboard] lead_submissions indisponível:', error.message);
+        } else if (data) {
+          solicitacoes = data.map(mapLeadToSolicitacao) as typeof solicitacoes;
+        }
+      } else {
+        const { data: solicitacoesData, error: solicitacoesError } = await supabase
+          .from('solicitacoes_orcamento')
+          .select('id, nome_completo, tipo_solicitacao, created_at')
+          .eq('enviado_email', false)
+          .order('created_at', { ascending: false })
+          .limit(10);
+
+        if (solicitacoesError) {
+          console.warn('[Dashboard] solicitacoes_orcamento indisponível:', solicitacoesError.message);
+        } else if (solicitacoesData) {
+          solicitacoes = solicitacoesData;
+        }
+      }
 
       // Calcular estatísticas
       const produtosAtivos = produtos?.filter(p => p.ativo) || [];

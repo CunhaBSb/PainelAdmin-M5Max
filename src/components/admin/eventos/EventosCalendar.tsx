@@ -77,7 +77,7 @@ export function EventosCalendar() {
     }
 
     fetchData()
-  }, [currentMonth, filtros])
+  }, [buscarEventos, currentMonth, filtros])
 
   // Filtrar eventos do dia selecionado
   useEffect(() => {
@@ -113,14 +113,14 @@ export function EventosCalendar() {
           setEventos(data)
         }
       }
-  
+
       fetchData()
     })
 
     return () => {
       unsubscribe()
     }
-  }, [])
+  }, [buscarEventos, currentMonth, filtros, inscreverAtualizacoes])
 
   // Formatar data
   const formatarData = (dataString: string) => {

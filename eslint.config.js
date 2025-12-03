@@ -19,9 +19,16 @@ export default tseslint.config(
     },
     rules: {
       ...reactHooks.configs.recommended.rules,
-      "react-refresh/only-export-components": [
-        "warn",
-        { allowConstantExport: true },
+      // Fast refresh rule disabled to allow shared helpers/constants in component files
+      "react-refresh/only-export-components": "off",
+      // Explicitly configure to avoid upstream option parsing bug when options are undefined
+      "@typescript-eslint/no-unused-expressions": [
+        "error",
+        {
+          allowShortCircuit: true,
+          allowTernary: true,
+          allowTaggedTemplates: true,
+        },
       ],
       "@typescript-eslint/no-unused-vars": "off",
     },

@@ -83,7 +83,7 @@ export function EventosTable() {
 
     const timeoutId = setTimeout(fetchData, 300) // Debounce
     return () => clearTimeout(timeoutId)
-  }, [filtros])
+  }, [buscarEventos, filtros])
 
   // Formatar data
   const formatarData = (dataString: string) => {
